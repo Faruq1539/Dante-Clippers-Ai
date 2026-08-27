@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Build outputs
+dist/
+build/
+.next/
+*.apk
+*.ipa
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
