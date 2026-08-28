@@ -15,6 +15,10 @@ class Settings(BaseSettings):
 
     monthly_free_credits: int = 60
 
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+    whisper_model_size: str = "base"
+
     tiktok_client_key: str = ""
     tiktok_client_secret: str = ""
     instagram_app_id: str = ""
@@ -29,3 +33,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
