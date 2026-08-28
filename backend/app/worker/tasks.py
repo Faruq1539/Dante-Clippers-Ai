@@ -2,6 +2,7 @@ from app.worker.celery_app import celery_app
 from app.database import SessionLocal
 from app.models.processing_job import ProcessingJob
 from app.models.clip import Clip
+from app.models.brand_template import BrandTemplate
 from app.worker import pipeline
 
 
@@ -42,7 +43,24 @@ def process_video_task(job_id: str):
                 db.add(clip)
                 db.flush()
 
-                storage_url = pipeline.render_clip(job.source_video.storage_url, candidate.start, candidate.end)
+                brand_config = None
+                if clip.brand_template_id:
+                    template = db.query(BrandTemplate).filter(BrandTemplate.id == clip.brand_template_id).first()
+                    if template:
+                        brand_config = {
+                            "font": template.font,
+                            "primary_color": template.primary_color,
+                            "accent_color": template.accent_color,
+                            **(template.caption_style or {}),
+                        }
+
+                storage_url = pipeline.render_clip(
+                    job.source_video.storage_url,
+                    candidate.start,
+                    candidate.end,
+                    brand_template=brand_config,
+                    transcript_segments=segments,
+                )
                 clip.storage_url = storage_url
                 clip.status = "ready"
 
