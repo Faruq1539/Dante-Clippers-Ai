@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Dante Clippers AI",
+    "slug": "dante-clippers-ai",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#0B0B0F"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.danteclippers.ai"
+    },
+    "android": {
+      "package": "com.danteclippers.ai"
+    }
+  }
+}
