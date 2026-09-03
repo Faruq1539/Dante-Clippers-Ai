@@ -2,8 +2,11 @@
 Highlight scoring stage: chunks the transcript and asks an LLM to identify
 clip-worthy moments in each chunk, with a start/end/score/reason per moment.
 
-This is the core "AI smart highlighting" feature from the product spec --
-worth iterating on the prompt/rubric a lot as you see real output quality.
+If the Anthropic API isn't available (no key, no billing credits, rate
+limit, network issue, etc.), this falls back to a simple heuristic scorer
+so the rest of the pipeline -- transcription, rendering, captions, storage
+-- can still be tested end-to-end for free. Swap back to real AI scoring
+once your Anthropic account has credits; see docs/tech-spec.md section 4.
 """
 
 import json
@@ -62,7 +65,6 @@ def _chunk_segments(
         chunk.append(seg)
         if seg[1] - chunk_start >= chunk_seconds:
             chunks.append(chunk)
-            # start next chunk `overlap_seconds` before this one ended
             overlap_start_time = seg[1] - overlap_seconds
             chunk = [s for s in chunk if s[1] >= overlap_start_time]
             chunk_start = chunk[0][0] if chunk else seg[1]
@@ -73,35 +75,69 @@ def _chunk_segments(
     return chunks
 
 
+def _heuristic_score_transcript(segments: list[tuple[float, float, str]]) -> list[dict]:
+    """
+    Free fallback used when the Anthropic API isn't available. Splits the
+    transcript into a handful of ~30-second segments using natural gaps
+    between transcript entries as cut points, with placeholder scores.
+    This lets you validate the rest of the pipeline without any AI cost --
+    it does NOT do real highlight detection, just mechanical segmentation.
+    """
+    if not segments:
+        return []
+
+    candidates = []
+    target_length = 30.0
+    current_start = segments[0][0]
+
+    for i, (start, end, text) in enumerate(segments):
+        if end - current_start >= target_length or i == len(segments) - 1:
+            candidates.append({
+                "start": current_start,
+                "end": end,
+                "score": 0.5,
+                "reason": "heuristic fallback -- no AI scoring available",
+            })
+            if i + 1 < len(segments):
+                current_start = segments[i + 1][0]
+
+    return candidates[:5]
+
+
 def score_transcript(segments: list[tuple[float, float, str]]) -> list[dict]:
     """Return a list of {start, end, score, reason} highlight candidates."""
     if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set -- required for highlight scoring")
+        print("[highlight_scoring] No ANTHROPIC_API_KEY set -- using free heuristic fallback")
+        return _heuristic_score_transcript(segments)
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    chunks = _chunk_segments(segments)
-    all_candidates: list[dict] = []
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        chunks = _chunk_segments(segments)
+        all_candidates: list[dict] = []
 
-    for chunk in chunks:
-        chunk_text = _format_chunk(chunk)
-        prompt = RUBRIC_PROMPT.format(chunk_text=chunk_text)
+        for chunk in chunks:
+            chunk_text = _format_chunk(chunk)
+            prompt = RUBRIC_PROMPT.format(chunk_text=chunk_text)
 
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
 
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
+            text = "".join(block.text for block in response.content if block.type == "text").strip()
 
-        try:
-            candidates = json.loads(text)
-        except json.JSONDecodeError:
-            # Model didn't return clean JSON for this chunk -- skip it
-            # rather than failing the whole job. Worth logging/alerting
-            # on in production so you can tighten the prompt.
-            continue
+            try:
+                candidates = json.loads(text)
+            except json.JSONDecodeError:
+                continue
 
-        all_candidates.extend(candidates)
+            all_candidates.extend(candidates)
 
-    return all_candidates
+        return all_candidates
+
+    except Exception as e:
+        # Covers billing errors, rate limits, network issues, etc. --
+        # fall back to the heuristic rather than failing the whole job.
+        print(f"[highlight_scoring] Anthropic API call failed, falling back to heuristic: {e}")
+        return _heuristic_score_transcript(segments)
