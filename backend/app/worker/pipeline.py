@@ -58,8 +58,6 @@ def score_highlights(segments: list[TranscriptSegment]) -> list[HighlightCandida
             reason=c.get("reason", ""),
         )
         for c in candidates
-        # basic sanity filtering -- guard against a malformed LLM response
-        # producing a zero-length or absurdly long "clip"
         if c["end"] > c["start"] and (c["end"] - c["start"]) <= 120
     ]
 
@@ -85,7 +83,6 @@ def _caption_style_args(brand_template: dict | None) -> str:
     outline_color = brand_template.get("accent_color", "#000000")
 
     def to_ass_color(hex_color: str) -> str:
-        # ASS wants &HAABBGGRR -- convert from #RRGGBB, no alpha
         hex_color = hex_color.lstrip("#")
         r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
         return f"&H00{b}{g}{r}"
@@ -108,12 +105,6 @@ def render_clip(
     """
     Cut the segment, reframe to 9:16 (center-crop), burn in captions, and
     upload the result. Returns the rendered clip's storage URL.
-
-    Reframing note: this uses a center crop, which works fine for most
-    single-speaker talking-head content. If your source video has
-    off-center subjects (e.g. two-person interviews, gameplay footage),
-    swap the crop filter for an active-speaker/face-tracking crop --
-    that's a real upgrade worth prioritizing once the basic pipeline works.
     """
     source_path = storage.download_to_temp(source_storage_url)
     duration = end - start
@@ -122,7 +113,6 @@ def render_clip(
     output_path = source_path + "_clip.mp4"
 
     try:
-        # Build captions for this clip's time window, if we have a transcript
         if transcript_segments:
             raw = [(s.start, s.end, s.text) for s in transcript_segments]
             srt_content = captions.build_srt(raw, start, end)
@@ -131,32 +121,37 @@ def render_clip(
 
         style = _caption_style_args(brand_template)
 
-        # Crop to 9:16 from the center, then scale to a standard vertical
-        # resolution, then burn in subtitles if we generated any.
         vf_parts = [
             "crop=ih*9/16:ih",
             "scale=1080:1920",
         ]
         if transcript_segments and os.path.exists(srt_path):
-            # ffmpeg's subtitles filter needs escaped colons on some platforms
-            escaped_srt = srt_path.replace(":", "\\:")
-            vf_parts.append(f"subtitles={escaped_srt}:force_style='{style}'")
+            # Windows fix: double up backslashes (ffmpeg's filter-string
+            # parser treats a single backslash as an escape character),
+            # escape the drive-letter colon, and wrap the whole path in
+            # quotes so the parser treats it as one token.
+            escaped_srt = srt_path.replace("\\", "\\\\").replace(":", "\\:")
+            vf_parts.append(f"subtitles='{escaped_srt}':force_style='{style}'")
 
         vf = ",".join(vf_parts)
 
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-ss", str(start), "-to", str(end),
-                "-i", source_path,
-                "-vf", vf,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-c:a", "aac", "-b:a", "128k",
-                output_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-ss", str(start), "-to", str(end),
+                    "-i", source_path,
+                    "-vf", vf,
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "128k",
+                    output_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr_text = e.stderr.decode("utf-8", errors="replace") if e.stderr else "(no stderr captured)"
+            raise RuntimeError(f"ffmpeg failed: {stderr_text}") from e
 
         return storage.upload_file(output_path, key_prefix="clips")
 
